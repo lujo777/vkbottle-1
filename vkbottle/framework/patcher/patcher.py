@@ -2,14 +2,7 @@ from .whitelist import WhiteList
 from .validators import VBMLValidators
 from inspect import getmembers, ismethod
 from typing import Optional, ClassVar
-import os
-
-
-def folder_checkup(path):
-    path = os.path.abspath(path)
-    if not os.path.exists(path):
-        os.mkdir(path)
-    return path
+from ...utils import folder_checkup
 
 
 class Patcher(WhiteList):
@@ -46,7 +39,7 @@ class Patcher(WhiteList):
             for key in keys:
                 if key in validators:
                     for validator in validators[key]:
-                        k = await self.regex_validators[validator](keys[key])
+                        k = await self.regex_validators[validator](keys[key], *validators[key][validator])
                         if k is None:
                             valid_dict = None
                             break

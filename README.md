@@ -36,7 +36,7 @@
 
 ***
 
-### Usage
+### Longpoll
 
 ```python
 from vkbottle import Bot, Message
@@ -80,8 +80,7 @@ More examples positioned in directory [/examples](./examples)
 
 Full docs you can find here:  
 
-* [Russian Version](./docs/readme.ru.md)
-* [English Version](./docs/kriper2005.txt)
+* [Russian Version](docs/README.RU.md)
 
 # Contributing
 

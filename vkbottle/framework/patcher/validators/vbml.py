@@ -1,3 +1,6 @@
+from urllib import parse
+
+
 class VBMLValidators:
     def __init__(self):
         pass
@@ -12,3 +15,13 @@ class VBMLValidators:
             return float(value)
         except ValueError:
             return
+
+    async def url(self, value: str):
+        scheme = parse.urlparse(value)
+        if scheme.netloc != '':
+            return value
+        return
+
+    async def validator(self, value: str, *args):
+        print('Value {} was validated by default validator! Hold on.\nReceived args: {}'.format(value, args))
+        return value

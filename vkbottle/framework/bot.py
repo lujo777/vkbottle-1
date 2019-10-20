@@ -3,12 +3,14 @@ from ..handler import Handler, ErrorHandler
 from ..const import DEFAULT_BOT_FOLDER
 from ..utils import Logger
 from ..http import HTTP
-from ..api import VKError
-from asyncio import get_event_loop, AbstractEventLoop, ensure_future
+from ..api import VKError, HandlerReturnError
+from asyncio import get_event_loop, AbstractEventLoop, ensure_future, TimeoutError
 from aiohttp.client_exceptions import ClientConnectionError, ServerTimeoutError
 from ._event import EventTypes
 from .processor import EventProcessor
 from .patcher import Patcher
+from .branch import BranchManager
+from .branch.standart_branch import Branch, ExitBranch
 
 
 DEFAULT_WAIT = 20
@@ -20,16 +22,24 @@ class Bot(HTTP, EventProcessor):
                  group_id: int,
                  debug: bool = True,
                  plugin_folder: str = None,
+                 log_to_file: bool = True,
                  log_to: str = None):
         self.__token: str = token
         self.__group_id: int = group_id
         self.__loop: AbstractEventLoop = get_event_loop()
         self.__debug = debug
         self.__wait = None
+        self.__dispatched = False
 
         self.api = Api(loop=self.__loop, token=token, group_id=group_id)
         self.patcher = Patcher(plugin_folder or DEFAULT_BOT_FOLDER)
-        self._logger = Logger(debug, log_file=log_to, plugin_folder=self.patcher.plugin_folder)
+
+        self._logger = Logger(debug,
+                              log_file=log_to,
+                              plugin_folder=self.patcher.plugin_folder,
+                              logger_enabled=log_to_file)
+
+        self.branch = BranchManager(plugin_folder or DEFAULT_BOT_FOLDER)
         self.on = Handler(self._logger, group_id)
         self.error_handler = ErrorHandler()
 
@@ -40,6 +50,10 @@ class Bot(HTTP, EventProcessor):
     @property
     def get_loop(self):
         return self.__loop
+
+    @property
+    def same(self):
+        return self
 
     async def get_server(self) -> dict:
         """
@@ -54,13 +68,17 @@ class Bot(HTTP, EventProcessor):
         :param longPollServer:
         :return: VK LongPoll Event
         """
-        url = "{}?act=a_check&key={}&ts={}&wait={}&rps_delay=0".format(
-            longPollServer['server'],
-            longPollServer['key'],
-            longPollServer['ts'],
-            self.__wait or DEFAULT_WAIT
-        )
-        return await self.request.post(url)
+        try:
+            url = "{}?act=a_check&key={}&ts={}&wait={}&rps_delay=0".format(
+                longPollServer['server'],
+                longPollServer['key'],
+                longPollServer['ts'],
+                self.__wait or DEFAULT_WAIT
+            )
+            return await self.request.post(url)
+        except TimeoutError:
+            self._logger.error('TimeoutError of asyncio in longpoll request')
+            return await self.make_long_request(longPollServer)
 
     def run_polling(self):
         loop = self.__loop
@@ -78,49 +96,63 @@ class Bot(HTTP, EventProcessor):
         while True:
             try:
                 event = await self.make_long_request(longPollServer)
-                ensure_future(self.process(event))
+                ensure_future(self.emulate(event))
                 longPollServer = await self.get_server()
 
-            except ClientConnectionError or ServerTimeoutError:
+            except ClientConnectionError or ServerTimeoutError or TimeoutError:
                 # No internet connection
                 await self._logger.warning('Server Timeout Error!')
 
-            except VKError as error:
-                error = list(error.args)[0]
+    async def emulate(self, event: dict, confirmation_token: str = None):
+        if not self.__dispatched:
+            self.on.dispatch()
+            self.__dispatched = True
 
-                if error[0] in self.error_handler.get_processor():
-                    handler = self.error_handler.get_processor()[error[0]]['call']
-
-                    self._logger.debug('VKError #{}! Processing it with handler <{}>'.format(error, handler.__name__))
-                    ensure_future(handler(error))
-                    longPollServer = await self.get_server()
-
-                else:
-                    self._logger.error('VKError! Add @bot.error_handler({}) to process this error!'.format(error))
-                    raise VKError(error)
-
-    async def process(self, event: dict, confirmation_token: str = None):
         if 'type' in event and event['type'] == 'confirmation':
             if event['group_id'] == self.group_id:
                 return confirmation_token or 'dissatisfied'
 
-        for update in event['updates']:
-            obj = update['object']
+        updates = event['updates'] if 'updates' in event else [event]
+        try:
 
-            if update['type'] == EventTypes.MESSAGE_NEW:
-                if obj['peer_id'] < 2e9:
-                    ensure_future(self._private_message_processor(obj=obj))
-                else:
-                    if 'action' not in obj:
-                        ensure_future(self._chat_message_processor(obj=obj))
+            for update in updates:
+                obj = update['object']
+
+                if update['type'] == EventTypes.MESSAGE_NEW:
+                    if obj['peer_id'] < 2e9:
+                        if obj['from_id'] not in self.branch.queue:
+                            task = ensure_future(self._private_message_processor(obj=obj))
+                        else:
+                            task = ensure_future(self._branched_processor(obj=obj))
                     else:
-                        ensure_future(self._chat_action_processor(obj=obj))
+                        if 'action' not in obj:
+                            if obj['peer_id'] not in self.branch.queue:
+                                task = ensure_future(self._chat_message_processor(obj=obj))
+                            else:
+                                task = ensure_future(self._branched_processor(obj=obj))
+                        else:
+                            task = ensure_future(self._chat_action_processor(obj=obj))
 
+                    processed = await task
+                    ensure_future(self._handler_return(processed, obj))
+
+                else:
+                    # If this is an event of the group AND this is not SELF-EVENT
+                    task = ensure_future(self._event_processor(obj=obj, event_type=update['type']))
+                    await task
+
+        except VKError as e:
+            e = list(e.args)[0]
+            if e[0] in self.error_handler.get_processor():
+                handler = self.error_handler.get_processor()[e[0]]['call']
+                self._logger.debug('VKError ?{}! Processing it with handler <{}>'.format(e, handler.__name__))
+                ensure_future(handler(e))
             else:
-                pass
-                # If this is an event of the group
-                # await self.new_event(event_type=update['type'], obj=obj)
+                self._logger.error('VKError! Add @bot.error_handler({}) to process this error!'.format(e))
+                raise VKError(e)
 
         return 'ok'
 
-
+    def process(self, event: dict, confirmation_token: str = None) -> str:
+        status = self.__loop.run_until_complete(self.emulate(event, confirmation_token))
+        return status
