@@ -5,29 +5,30 @@
 Нужные нам классы:
 
 ```python
-from vkbottle import Bot, Message, keyboard_generator, VKError
+import typing
+from vkbottle import Bot, Message, keyboard_gen, VKError
 ```
 
 ## Переменные первой ступени:
 
-`session` - aiohttp ClientSession  
-`plugin_folder` - string, bot folder name  
-`patcher` -  bot patching class, needed for whitelist support  
-`on` - main class for decorators
-`api` - VK Api wrapper
+`session` - Сессия HTTP-клиента для обращения к API.
+`plugin_folder` - Строка, название папки бота для хранения логов.
+`patcher` -  Bot patching class, нужен для валидаторов, whitelistа и пр.
+`on` - Обработчики сообщений.
+`api` - Обёртка над методами API.
 
 ## Callback!
 
-Мы можем создать простой обработчик событий фласком
+Мы можем создать простой обработчик событий любым веб-фреймворком (настоятельно рекомендуется использовать асинхронные решения).
 
 ```
-# app = Flask()
+# app = FrameWork()
 @app.route('/')
-def route():
-    bot.process(flask.request.args(), confirmation_token='YourConfirm')
+async def route():
+    return await bot.emulate(request.args(), confirmation_token='YourConfirm')
 ```
 
-Это решение помогает сохранять совместимость с процессом совмещения держания бота и сайта на одном адресе
+Это решение помогает сохранять совместимость с процессом совмещения размещения бота и сайта на одном адресе.
 
 **:cowboy_hat_face: При Callback'е поллинг запускать не надо..**
 
@@ -53,21 +54,19 @@ async def wrapper(ans: Message):
 
 ### Message - ans
 
-Message - простой типизационный датакласс, так же с ним доступны методы:  
+Message - простой класс для работы с сообщениями пришедшими от пользователя, так же с ним доступны методы:  
 
-`__call__` - простой вызов для написания сообщения в уже сохраненный диалог  
-`reply` - ответ на сообщение с уже сохраненным id сообщения
+`__call__` - простой вызов для написания сообщения в уже известный диалог.
+`reply` - ответ на сообщение с уже известным id сообщения.
+
+Помимо всего этого, Вы можете обратиться к различным полям `Message`, например: `Message.text` (подробнее в официальной документации VK-API).
 
 ### События
 
 ```python
-@bot.on.event(name='on_group_join')
-async def wrapper(ans: Message):
-    try:
-        await ans('Удачно ты зашел!')
-    except VkError:
-        # Нет возможности написать сообщение
-        pass
+@bot.on.event.group_join()
+async def wrapper(event: GroupJoin):
+    print('+1')
 ```
 
 ### Класс декоратора сообщения
@@ -79,16 +78,25 @@ Startswith:
 ```python
 @bot.on.message.startswith(text='привет')
 async def wrapper(ans: Message):
-    await ans('твое сообщение началось с <<привет>>')
+    assert ans.text.startswith("привет")
+    await ans('Твое сообщение началось с <<привет>>.')
 ```
 
 Regex:
 
 ```python
-@bot.on.message_chat.startswith('.*?')
+@bot.on.message_chat.regex('.*?')
 async def wrapper(ans: Message):
-    await ans('этот декоратор сработает при каждом сообщении из чата (зач?)')
+    await ans('Этот декоратор сработает при каждом сообщении из чата (зачем?).')
 ```
+
+Вы можете использовать параметр lower для того чтобы игнорировать кейс написания сообщения.
+Вы можете использовать параметр command для того чтобы не писать префикс в начале команды, по умолчанию префикс это - `/`.
+Для того чтобы назначить несколько префиксов добавьте `bot.on.change_prefix_for_all(list_prefixes)`, например:
+```python
+bot.on.change_prefix_for_all(['!', '/'])
+```
+Теперь обработчик считает за префикс команды сообщения начинающиеся с `!` и `/`.
 
 ### Кнопки
 
@@ -101,33 +109,33 @@ async def wrapper(ans: Message):
    pattern = [[{'text': 'моя кнопка'}]]
    ```
    
-   Вместе с `text` можно передавать все параметры доступные для кнопок из официальной документации
+   Вместе с `text` можно передавать все параметры доступные для кнопок из официальной документации.
 
 2) Создадим клавиатуру
 
 ```python
-my_keyboard = keyboard_generator(pattern, one_time=False)
+my_keyboard = keyboard_gen(pattern, one_time=False)
 ```
 
 3) Отправим ее
 
 ```python
-@bot.on.message(text='клавиатуру пожалуйста')
+@bot.on.message(text='клавиатуру пожалуйста', lower=True)
 async def wrapper(ans: Message):
-    await ans('держите', keyboard=keyboard)
+    await ans('Держите.', keyboard=keyboard)
 ```
 
 ### Другие декораторы
 
-**@bot.on.chat_mention()**  
-Срабатывает при чистом упоминании бота в чате
+**@bot.on.chat_mention()**
+Срабатывает при простом упоминании бота в чате
 
-**@bot.on.chat_invite()**  
+**@bot.on.chat_invite()**
 Срабатывает при добавлении бота в чат
 
-Кстати, реакции на сообщения работают при упоминании бота в чате через @ 
+Кстати, реакции на сообщения работают при упоминании бота в чате через @.
 
-### :heartpulse: Args in messages handlers
+### :heartpulse: Аргументы хендлеров
 
 ```python
 @bot.on.message('меня зовут <name>')
@@ -135,4 +143,14 @@ async def wrapper(ans: Message, name):
     await ans(f'Ну привет, {name}!')
 ```
 
-It works such this in other decorators too (except of regex decorator, of course)
+Это работает во всем кроме regex декоратора, но вы можете решить это, если знаете regexp и загляните в vbml_parser  
+
+### Валидаторы
+
+Есть отдельная документация по валидаторам на русском языке, [загляните сюда](/docs/validators-docs.md).
+Валидаторы используются в основном для поддержания бота в тонусе и минимизации нагрузки. Валидаторы позволяют вам не проверять является ли какая-то часть сообщения числом или ссылкой, все это встроено. Кроме того вы можете писать свои собственные кастомные валидаторы.
+
+### Ветки (англ. - Branches)
+
+Ветки, так называемые short-term ветки событий, с помощью них вы можете построить систему тестов, ввод какого-то значения пользователем или даже ~~игрового бота~~
+Документацию по веткам вы сможете найти [перейдя сюда](/docs/branches.ru.md)
